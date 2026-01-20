@@ -15,7 +15,7 @@ apt install -y wget curl || true
 echo "[*] Устанавливаем OpenVPN через локальный angristan (из репо) ..."
 chmod +x "$SCRIPT_DIR/openvpn-install.sh"
 # angristan сам интерактивный
-bash "$SCRIPT_DIR/openvpn-install.sh"
+bash "$SCRIPT_DIR/openvpn-install.sh" install
 
 refresh_paths() {
   SERVER_CONF=""
@@ -35,6 +35,19 @@ refresh_paths() {
   fi
 }
 
+
+# Безопасный симлинк: не пытаемся линковать файл сам на себя
+safe_link() {
+  local src="$1" dst="$2"
+  local src_real dst_real
+  src_real="$(readlink -f "$src")"
+  dst_real="$(readlink -f "$dst" 2>/dev/null || true)"
+  if [[ -n "$dst_real" && "$src_real" == "$dst_real" ]]; then
+    return 0
+  fi
+  ln -sfn "$src" "$dst"
+}
+
 echo "[*] Ищу server.conf ..."
 if ! refresh_paths; then
   echo "[!] Не найден server.conf после установки. Ожидаю /etc/openvpn/server/server.conf или /etc/openvpn/server.conf" >&2
@@ -43,12 +56,9 @@ fi
 
 # На всякий случай создадим legacy-симлинки (многие скрипты/боты их ждут)
 mkdir -p /etc/openvpn
-ln -sfn "$SERVER_CONF" /etc/openvpn/server.conf
-if [[ "$SERVER_CONF" == "/etc/openvpn/server/server.conf" ]]; then
-  ln -sfn "$SERVER_CONF" /etc/openvpn/server.conf
-fi
+safe_link "$SERVER_CONF" /etc/openvpn/server.conf
 if [[ -n "$CLIENT_TEMPLATE" && -f "$CLIENT_TEMPLATE" ]]; then
-  ln -sfn "$CLIENT_TEMPLATE" /etc/openvpn/client-template.txt
+  safe_link "$CLIENT_TEMPLATE" /etc/openvpn/client-template.txt
 fi
 
 # --- Определяем режим TLS по server.conf ---
@@ -125,12 +135,9 @@ if [[ "$TLS_MODE" == "tls-crypt" ]]; then
 
   # На всякий случай обновим симлинки
   mkdir -p /etc/openvpn
-  ln -sfn "$SERVER_CONF" /etc/openvpn/server.conf
-  if [[ "$SERVER_CONF" == "/etc/openvpn/server/server.conf" ]]; then
-    ln -sfn "$SERVER_CONF" /etc/openvpn/server.conf
-  fi
+  safe_link "$SERVER_CONF" /etc/openvpn/server.conf
   if [[ -n "$CLIENT_TEMPLATE" && -f "$CLIENT_TEMPLATE" ]]; then
-    ln -sfn "$CLIENT_TEMPLATE" /etc/openvpn/client-template.txt
+    safe_link "$CLIENT_TEMPLATE" /etc/openvpn/client-template.txt
   fi
 
   echo "[*] Добавляем scramble xormask 5 ..."
