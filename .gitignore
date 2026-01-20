@@ -1,0 +1,7 @@
+# secrets
+monitor_bot/config.py
+
+# python
+__pycache__/
+*.pyc
+.venv/
