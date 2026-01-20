@@ -30,3 +30,32 @@ apt update && apt install -y git && \
 ```bash
 journalctl -u vpn_bot.service -f
 ```
+## Управление сервисами (OpenVPN и бот)
+
+### OpenVPN
+
+> На большинстве систем с новым расположением `/etc/openvpn/server/` сервис называется `openvpn-server@server`.
+
+```bash
+systemctl restart openvpn-server@server
+systemctl status openvpn-server@server
+```
+
+Если у тебя другое имя сервиса (редко, но бывает), посмотри список:
+
+```bash
+systemctl list-units --type=service | grep -i openvpn
+```
+
+### Telegram-бот (vpn_bot.service)
+
+```bash
+systemctl restart vpn_bot.service
+systemctl status vpn_bot.service
+```
+---
+
+## Автор
+
+XSFORM  
+Telegram: [@XSFORM](https://t.me/XS_FORM)
