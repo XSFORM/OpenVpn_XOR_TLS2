@@ -15,7 +15,7 @@ apt install -y wget curl || true
 echo "[*] Устанавливаем OpenVPN через локальный angristan (из репо) ..."
 chmod +x "$SCRIPT_DIR/openvpn-install.sh"
 # angristan сам интерактивный
-bash "$SCRIPT_DIR/openvpn-install.sh" install
+bash "$SCRIPT_DIR/openvpn-install.sh" interactive
 
 refresh_paths() {
   SERVER_CONF=""
