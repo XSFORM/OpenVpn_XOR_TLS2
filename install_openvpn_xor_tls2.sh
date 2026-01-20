@@ -129,7 +129,14 @@ if [[ "$TLS_MODE" == "tls-crypt" ]]; then
   wget -q https://raw.githubusercontent.com/x0r2d2/openvpn-xor/main/openvpn_xor_install.sh -O /tmp/openvpn_xor_install.sh
   chmod +x /tmp/openvpn_xor_install.sh
   bash /tmp/openvpn_xor_install.sh
+  
+  bash /tmp/openvpn_xor_install.sh
 
+  # --- фикс пути для systemd unit (на Debian/Ubuntu ждёт /usr/sbin/openvpn) ---
+  ln -sf /usr/local/sbin/openvpn /usr/sbin/openvpn
+  chmod +x /usr/sbin/openvpn
+  systemctl daemon-reload
+  
   # После установки XOR могли появиться/измениться пути — обновим
   refresh_paths || true
 
