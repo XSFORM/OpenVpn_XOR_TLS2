@@ -120,6 +120,35 @@ def detect_status_log(server_conf_path: str) -> str:
             return p
     return fallbacks[0]
 
+
+def detect_ipp_file(server_conf_path: str, openvpn_dir: str) -> str:
+    """Return absolute path to ipp.txt based on ifconfig-pool-persist directive."""
+    try:
+        if os.path.isfile(server_conf_path):
+            with open(server_conf_path, "r", encoding="utf-8", errors="ignore") as f:
+                for line in f:
+                    s = line.strip()
+                    if not s or s.startswith(("#", ";")):
+                        continue
+                    if s.startswith("ifconfig-pool-persist"):
+                        parts = s.split()
+                        if len(parts) >= 2:
+                            p = parts[1]
+                            if p.startswith("/"):
+                                return p
+                            return os.path.join(openvpn_dir, p)
+    except Exception:
+        pass
+    # common fallbacks
+    for p in [
+        os.path.join(openvpn_dir, "ipp.txt"),
+        "/etc/openvpn/ipp.txt",
+        "/var/log/openvpn/ipp.txt",
+    ]:
+        if os.path.isfile(p):
+            return p
+    return os.path.join(openvpn_dir, "ipp.txt")
+
 def detect_tls_mode(server_conf_path: str) -> str:
     """
     Определяет, что используется на сервере:
@@ -181,6 +210,26 @@ MANAGEMENT_TIMEOUT = 3                       # seconds
 
 MIN_ONLINE_ALERT = 15
 ALERT_INTERVAL_SEC = 300
+# --- Alarm toggle (block alerts ON/OFF) ---
+ALARM_FLAG = "/var/run/openvpn_alarm.enabled"
+
+def alarm_is_enabled() -> bool:
+    return os.path.exists(ALARM_FLAG)
+
+def alarm_enable():
+    os.makedirs(os.path.dirname(ALARM_FLAG), exist_ok=True)
+    with open(ALARM_FLAG, "w") as f:
+        f.write("on")
+
+def alarm_disable():
+    try:
+        if os.path.exists(ALARM_FLAG):
+            os.remove(ALARM_FLAG)
+    except Exception:
+        pass
+# -----------------------------------------
+
+
 last_alert_time = 0
 clients_last_online = set()
 
@@ -1104,7 +1153,7 @@ def get_main_keyboard():
          InlineKeyboardButton("📜 Просмотр лога", callback_data='log')],
         [InlineKeyboardButton("📦 Бэкап OpenVPN", callback_data='backup_menu'),
          InlineKeyboardButton("🔄 Восстан.бэкап", callback_data='restore_menu')],
-        [InlineKeyboardButton("🚨 Тревога блокировки", callback_data='block_alert')],
+        [InlineKeyboardButton("🚨 Тревога ON", callback_data='alarm_on'), InlineKeyboardButton("🛑 Тревога OFF", callback_data='alarm_off')],
         [InlineKeyboardButton("❓ Помощь", callback_data='help'),
          InlineKeyboardButton("🏠 В главное меню", callback_data='home')],
     ]
@@ -1539,32 +1588,53 @@ def save_traffic_db(force=False):
         print(f"[traffic] save error: {e}")
 
 def update_traffic_from_status(clients):
+    """Accumulate per-client traffic deltas from status bytes counters."""
     global traffic_usage, _last_session_state
     changed = False
+
     for c in clients:
-        name = c['name']
+        name = c.get("name", "").strip()
+        if not name:
+            continue
+
+        # bytes in status are cumulative since connection start
         try:
-            recv = int(c.get('bytes_recv', 0))
-            sent = int(c.get('bytes_sent', 0))
-        except:
+            recv = int(c.get("bytes_recv", 0))
+            sent = int(c.get("bytes_sent", 0))
+        except Exception:
             continue
-        connected_since = c.get('connected_since', '')
-        prev = _last_session_state.get(name)
+
+        connected_since = c.get("connected_since", "") or ""
+
         if name not in traffic_usage:
-            traffic_usage[name] = {'rx': 0, 'tx': 0}
-        if prev is None or prev['connected_since'] != connected_since:
-            _last_session_state[name] = {'connected_since': connected_since, 'rx': recv, 'tx': sent}
+            traffic_usage[name] = {"rx": 0, "tx": 0}
+
+        prev = _last_session_state.get(name)
+        if prev is None or prev.get("connected_since") != connected_since:
+            # new session (or first time): set baseline
+            _last_session_state[name] = {"connected_since": connected_since, "rx": recv, "tx": sent}
             continue
-        delta_rx = recv - prev['rx']; delta_tx = sent - prev['tx']
-        if delta_rx > 0:
-            traffic_usage[name]['rx'] += delta_rx; prev['rx'] = recv; changed = True
-        else:
-            prev['rx'] = recv
-        if delta_tx > 0:
-            traffic_usage[name]['tx'] += delta_tx; prev['tx'] = sent; changed = True
-        else:
-            prev['tx'] = sent
-    if changed: save_traffic_db()
+
+        # delta from previous snapshot
+        delta_rx = recv - int(prev.get("rx", 0))
+        delta_tx = sent - int(prev.get("tx", 0))
+
+        # handle counter reset (shouldn't happen often)
+        if delta_rx < 0:
+            delta_rx = recv
+        if delta_tx < 0:
+            delta_tx = sent
+
+        if delta_rx or delta_tx:
+            traffic_usage[name]["rx"] += delta_rx
+            traffic_usage[name]["tx"] += delta_tx
+            changed = True
+
+        prev["rx"] = recv
+        prev["tx"] = sent
+
+    if changed:
+        save_traffic_db(force=True)
 
 def clear_traffic_stats():
     global traffic_usage, _last_session_state
@@ -1602,14 +1672,16 @@ async def check_new_connections(app: Application):
                 check_and_notify_expiring(app.bot)
                 check_new_connections._last_enforce = now_t
             online_count = len(online_names)
+            alarm_on = alarm_is_enabled()
+            alarm_on = alarm_is_enabled()
             total_keys = len(get_ovpn_files())
             now = time.time()
             if online_count == 0 and total_keys > 0:
-                if now - last_alert_time > ALERT_INTERVAL_SEC:
+                if alarm_on and now - last_alert_time > ALERT_INTERVAL_SEC:
                     await app.bot.send_message(ADMIN_ID, "❌ Все клиенты оффлайн!", parse_mode="HTML")
                     last_alert_time = now
             elif 0 < online_count < MIN_ONLINE_ALERT:
-                if now - last_alert_time > ALERT_INTERVAL_SEC:
+                if alarm_on and now - last_alert_time > ALERT_INTERVAL_SEC:
                     await app.bot.send_message(ADMIN_ID, f"⚠️ Онлайн мало: {online_count}/{total_keys}", parse_mode="HTML")
                     last_alert_time = now
             else:
@@ -1622,44 +1694,87 @@ async def check_new_connections(app: Application):
             await asyncio.sleep(10)
 
 def parse_openvpn_status(status_path=STATUS_LOG):
-    clients = []; online_names = set(); tunnel_ips = {}
+    """Parse OpenVPN status file (status-version 1 or 2).
+    Returns: (clients_list, online_names_set, tunnel_ips_dict[name]->virtual_ip)
+    """
+    clients = []
+    online_names = set()
+    tunnel_ips = {}
+
     try:
-        with open(status_path, "r") as f:
+        if not status_path or not os.path.exists(status_path):
+            return clients, online_names, tunnel_ips
+
+        with open(status_path, "r", encoding="utf-8", errors="ignore") as f:
             lines = f.readlines()
-        client_list_section = False
-        routing_table_section = False
-        for line in lines:
-            line_s = line.strip()
-            if line_s.startswith("OpenVPN CLIENT LIST"):
-                client_list_section = True; continue
-            if client_list_section and line_s.startswith("Common Name,Real Address"):
+
+        section = None  # None | "CLIENT_LIST" | "ROUTING_TABLE"
+        for raw in lines:
+            line = raw.strip()
+            if not line:
+                section = None
                 continue
-            if client_list_section and not line_s:
-                client_list_section = False; continue
-            if client_list_section and "," in line_s:
-                parts = line_s.split(",")
-                if len(parts) >= 5:
-                    clients.append({
-                        "name": parts[0],
-                        "ip": parts[1].split(":")[0],
-                        "port": parts[1].split(":")[1] if ":" in parts[1] else "",
-                        "bytes_recv": parts[2],
-                        "bytes_sent": parts[3],
-                        "connected_since": parts[4],
-                    })
-            if line_s.startswith("ROUTING TABLE"):
-                routing_table_section = True; continue
-            if routing_table_section and line_s.startswith("Virtual Address,Common Name"):
+
+            if line.startswith("OpenVPN CLIENT LIST"):
+                section = "CLIENT_LIST"
                 continue
-            if routing_table_section and not line_s:
-                routing_table_section = False; continue
-            if routing_table_section and "," in line_s:
-                parts = line_s.split(",")
-                if len(parts) >= 2:
-                    tunnel_ips[parts[1]] = parts[0]
-                    online_names.add(parts[1])
+            if line.startswith("ROUTING TABLE"):
+                section = "ROUTING_TABLE"
+                continue
+
+            if section == "CLIENT_LIST":
+                # header examples:
+                # v1: Common Name,Real Address,Bytes Received,Bytes Sent,Connected Since
+                # v2: Common Name,Real Address,Bytes Received,Bytes Sent,Connected Since,Connected Since (time_t),Username,Client ID,Peer ID
+                if line.startswith("Common Name,Real Address"):
+                    continue
+                if "," not in line:
+                    continue
+                parts = line.split(",")
+                if len(parts) < 2:
+                    continue
+                name = parts[0].strip()
+                real = parts[1].strip()
+                ip = real.split(":")[0] if real else ""
+                port = real.split(":")[1] if ":" in real else ""
+                bytes_recv = parts[2].strip() if len(parts) >= 3 else "0"
+                bytes_sent = parts[3].strip() if len(parts) >= 4 else "0"
+                connected_since = parts[4].strip() if len(parts) >= 5 else ""
+                clients.append({
+                    "name": name,
+                    "ip": ip,
+                    "port": port,
+                    "bytes_recv": bytes_recv,
+                    "bytes_sent": bytes_sent,
+                    "connected_since": connected_since,
+                })
+                # IMPORTANT: mark as online from CLIENT LIST (even if ROUTING TABLE absent)
+                if name:
+                    online_names.add(name)
+                continue
+
+            if section == "ROUTING_TABLE":
+                # header examples:
+                # Virtual Address,Common Name,Real Address,Last Ref
+                # Virtual Address,Common Name
+                if line.startswith("Virtual Address,Common Name"):
+                    continue
+                if "," not in line:
+                    continue
+                parts = line.split(",")
+                if len(parts) < 2:
+                    continue
+                virt = parts[0].strip()
+                name = parts[1].strip()
+                if name:
+                    online_names.add(name)
+                    if virt:
+                        tunnel_ips[name] = virt
+                continue
+
     except Exception as e:
         print(f"[parse_openvpn_status] {e}")
+
     return clients, online_names, tunnel_ips
 
 # ------------------ safe_edit_text ------------------
@@ -1904,20 +2019,37 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await view_keys_expiry_handler(update, context)
 
     elif data == 'send_ipp':
-        ipp_path = "/etc/openvpn/ipp.txt"
+        ipp_path = detect_ipp_file(os.path.join(OPENVPN_DIR, "server.conf"), OPENVPN_DIR)
         if os.path.exists(ipp_path):
             with open(ipp_path, "rb") as f:
-                await context.bot.send_document(chat_id=q.message.chat_id, document=InputFile(f), filename="ipp.txt")
+                await context.bot.send_document(
+                    chat_id=q.message.chat_id,
+                    document=InputFile(f),
+                    filename="ipp.txt"
+                )
             await safe_edit_text(q, context, "ipp.txt отправлен.")
         else:
-            await safe_edit_text(q, context, "ipp.txt не найден.")
+            await safe_edit_text(q, context, f"ipp.txt не найден. Ожидал: {ipp_path}")
+
+    elif data == 'alarm_on':
+        alarm_enable()
+        await safe_edit_text(q, context, "🚨 Тревога включена (ON).")
+
+    elif data == 'alarm_off':
+        alarm_disable()
+        await safe_edit_text(q, context, "🛑 Тревога выключена (OFF).")
 
     elif data == 'block_alert':
-        await safe_edit_text(q, context,
-                             "🔔 Мониторинг блокировки включен.\n"
-                             f"Порог MIN_ONLINE_ALERT = {MIN_ONLINE_ALERT}\n"
-                             "Оповещения если:\n • Все клиенты оффлайн\n • Онлайн меньше порога\n"
-                             "Проверка каждые 10с. Истечения — каждые 12ч.")
+        await safe_edit_text(
+            q,
+            context,
+            "🔔 Мониторинг блокировки включен.\n"
+            f"Порог MIN_ONLINE_ALERT = {MIN_ONLINE_ALERT}\n"
+            "Оповещения если:\n"
+            " • Все клиенты оффлайн\n"
+            " • Онлайн меньше порога\n"
+            "Проверка каждые 10с. Истечения — каждые 12ч."
+        )
 
     elif data == 'help':
         await context.bot.send_message(q.message.chat_id, runtime_info())
@@ -1931,9 +2063,13 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         context.user_data['await_key_name'] = True
 
     elif data == 'home':
-        await context.bot.send_message(q.message.chat_id, "Главное меню уже показано. Для обновления нажми /start.")
+        await context.bot.send_message(
+            q.message.chat_id,
+            "Главное меню уже показано. Для обновления нажми /start."
+        )
     else:
         await safe_edit_text(q, context, "Неизвестная команда.")
+
 
 # ------------------ Команды (CLI) ------------------
 async def traffic_cmd_cli(update: Update, context: ContextTypes.DEFAULT_TYPE):
