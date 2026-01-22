@@ -1819,15 +1819,34 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await q.answer()
     data = q.data
     print("DEBUG callback_data:", data)
+        # Нормализация callback_data (на случай разных вариантов в клавиатуре)
+    aliases = {
+        "traffic_btn": "traffic",
+        "traffic_menu": "traffic",
+        "traffic_report": "traffic",
+        "trafik": "traffic",
+
+        "stat": "stats",
+        "statistics": "stats",
+        "statistic": "stats",
+
+        "tunnel": "send_ipp",
+        "ipp": "send_ipp",
+        "sendipp": "send_ipp",
+
+        "alarmON": "alarm_on",
+        "alarmOFF": "alarm_off",
+    }
+    data = aliases.get(data, data)
+
 
     if data == 'refresh':
         await safe_edit_text(q, context, format_clients_by_certs(), parse_mode="HTML")
-    elif data == 'stats':
-        # ...
-        await safe_edit_text(q, context, msgs[0], parse_mode="HTML")
 
     elif data == 'stats':
-        clients, online_names, tunnel_ips = parse_openvpn_status()
+        status_path = "/var/log/openvpn/status.log"
+        clients, online_names, tunnel_ips = parse_openvpn_status(status_path)
+
         files = get_ovpn_files()
         files = sorted(files, key=lambda x: _natural_key(x[:-5]))
         lines = ["<b>Статус всех ключей:</b>"]
@@ -1841,8 +1860,14 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         for m in msgs[1:]:
             await context.bot.send_message(chat_id=q.message.chat_id, text=m, parse_mode="HTML")
 
-    elif data == 'traffic':
+    elif data in ('traffic', 'trafik', 'traffic_btn', 'traffic_menu', 'traffic_report'):
+        status_path = "/var/log/openvpn/status.log"
+        clients, _online_names, _tunnel_ips = parse_openvpn_status(status_path)
+
+        # Обновляем накопление трафика из текущего status.log
+        update_traffic_from_status(clients)
         save_traffic_db(force=True)
+
         await safe_edit_text(q, context, build_traffic_report(), parse_mode="HTML")
 
     elif data == 'traffic_clear':
@@ -1853,73 +1878,97 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await safe_edit_text(q, context, "Очистить накопленный трафик?", reply_markup=kb)
 
     elif data == 'confirm_clear_traffic':
-        clear_traffic_stats(); await safe_edit_text(q, context, "Очищено.")
+        clear_traffic_stats()
+        await safe_edit_text(q, context, "Очищено.")
+
     elif data == 'cancel_clear_traffic':
         await safe_edit_text(q, context, "Отменено.")
 
     elif data == 'update_remote':
         await start_update_remote_dialog(update, context)
+
     elif data == 'cancel_update_remote':
-        context.user_data.pop('await_remote_input', None); await safe_edit_text(q, context, "Отменено.")
+        context.user_data.pop('await_remote_input', None)
+        await safe_edit_text(q, context, "Отменено.")
 
     elif data == 'renew_key':
         await renew_key_request(update, context)
+
     elif data.startswith('renew_'):
         await renew_key_select_handler(update, context)
+
     elif data == 'cancel_renew':
         await renew_cancel(update, context)
 
     elif data == 'backup_menu':
         await backup_menu(update, context)
+
     elif data == 'restore_menu':
         await restore_menu(update, context)
+
     elif data == 'backup_create':
         await perform_backup_and_send(update, context)
+
     elif data == 'backup_list':
         await show_backup_list(update, context)
+
     elif data.startswith('backup_info_'):
         await show_backup_info(update, context, data.replace('backup_info_', '', 1))
+
     elif data.startswith('backup_send_'):
         await send_backup_file(update, context, data.replace('backup_send_', '', 1))
+
     elif data.startswith('restore_dry_'):
         await restore_dry_run(update, context, data.replace('restore_dry_', '', 1))
+
     elif data.startswith('restore_apply_'):
         await restore_apply(update, context, data.replace('restore_apply_', '', 1))
+
     elif data.startswith('backup_delete_confirm_'):
         await backup_delete_apply(update, context, data.replace('backup_delete_confirm_', '', 1))
+
     elif data.startswith('backup_delete_'):
         await backup_delete_prompt(update, context, data.replace('backup_delete_', '', 1))
 
     elif data == 'bulk_delete_start':
         await start_bulk_delete(update, context)
+
     elif data == 'bulk_delete_confirm':
         await bulk_delete_confirm(update, context)
+
     elif data == 'cancel_bulk_delete':
         await bulk_delete_cancel(update, context)
 
     elif data == 'bulk_send_start':
         await start_bulk_send(update, context)
+
     elif data == 'bulk_send_confirm':
         await bulk_send_confirm(update, context)
+
     elif data == 'cancel_bulk_send':
         await bulk_send_cancel(update, context)
 
     elif data == 'bulk_enable_start':
         await start_bulk_enable(update, context)
+
     elif data == 'bulk_enable_confirm':
         await bulk_enable_confirm(update, context)
+
     elif data == 'cancel_bulk_enable':
         await bulk_enable_cancel(update, context)
 
     elif data == 'bulk_disable_start':
         await start_bulk_disable(update, context)
+
     elif data == 'bulk_disable_confirm':
         await bulk_disable_confirm(update, context)
+
     elif data == 'cancel_bulk_disable':
         await bulk_disable_cancel(update, context)
 
     elif data == 'update_info':
         await send_simple_update_command(update, context)
+
     elif data == 'copy_update_cmd':
         await resend_update_command(update, context)
 
@@ -1930,17 +1979,23 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         ipp_path = "/etc/openvpn/ipp.txt"
         if os.path.exists(ipp_path):
             with open(ipp_path, "rb") as f:
-                await context.bot.send_document(chat_id=q.message.chat_id, document=InputFile(f), filename="ipp.txt")
+                await context.bot.send_document(
+                    chat_id=q.message.chat_id,
+                    document=InputFile(f),
+                    filename="ipp.txt"
+                )
             await safe_edit_text(q, context, "ipp.txt отправлен.")
         else:
             await safe_edit_text(q, context, "ipp.txt не найден.")
 
     elif data == 'block_alert':
-        await safe_edit_text(q, context,
-                             "🔔 Мониторинг блокировки включен.\n"
-                             f"Порог MIN_ONLINE_ALERT = {MIN_ONLINE_ALERT}\n"
-                             "Оповещения если:\n • Все клиенты оффлайн\n • Онлайн меньше порога\n"
-                             "Проверка каждые 10с. Истечения — каждые 12ч.")
+        await safe_edit_text(
+            q, context,
+            "🔔 Мониторинг блокировки включен.\n"
+            f"Порог MIN_ONLINE_ALERT = {MIN_ONLINE_ALERT}\n"
+            "Оповещения если:\n • Все клиенты оффлайн\n • Онлайн меньше порога\n"
+            "Проверка каждые 10с. Истечения — каждые 12ч."
+        )
 
     elif data == 'help':
         await context.bot.send_message(q.message.chat_id, runtime_info())
@@ -1955,8 +2010,10 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     elif data == 'home':
         await context.bot.send_message(q.message.chat_id, "Главное меню уже показано. Для обновления нажми /start.")
+
     else:
         await safe_edit_text(q, context, "Неизвестная команда.")
+
 
 # ------------------ Команды (CLI) ------------------
 async def traffic_cmd_cli(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -3683,9 +3740,13 @@ async def check_new_connections(app: Application):
             print(f"[monitor] {e}")
             await asyncio.sleep(10)
 
-def parse_openvpn_status(status_path=STATUS_LOG):
-    """Parse OpenVPN status file (status-version 1 or 2).
-    Returns: (clients_list, online_names_set, tunnel_ips_dict[name]->virtual_ip)
+def parse_openvpn_status(status_path: str = "/var/log/openvpn/status.log"):
+    """
+    Парсит OpenVPN status.log
+    Поддержка:
+      - CSV (status-version 2): строки CLIENT_LIST,<CN>,<Real>,<Virtual>,...
+      - Старый формат: секции OpenVPN CLIENT LIST / ROUTING TABLE
+    Возвращает: (clients_list, online_names_set, tunnel_ips_dict)
     """
     clients = []
     online_names = set()
@@ -3698,7 +3759,48 @@ def parse_openvpn_status(status_path=STATUS_LOG):
         with open(status_path, "r", encoding="utf-8", errors="ignore") as f:
             lines = f.readlines()
 
-        section = None  # None | "CLIENT_LIST" | "ROUTING_TABLE"
+        # --- Самое главное: если есть CSV строки CLIENT_LIST, берём их напрямую ---
+        csv_client_lines = [ln.strip() for ln in lines if ln.startswith("CLIENT_LIST,")]
+        if csv_client_lines:
+            for line in csv_client_lines:
+                parts = line.split(",")
+                # CLIENT_LIST,CommonName,RealAddress,VirtualAddress,VirtualIPv6,BytesRecv,BytesSent,ConnectedSince,...
+                if len(parts) < 4:
+                    continue
+
+                name = parts[1].strip()
+                real = parts[2].strip()
+                virt = parts[3].strip()
+
+                bytes_recv = parts[5].strip() if len(parts) > 5 else "0"
+                bytes_sent = parts[6].strip() if len(parts) > 6 else "0"
+                connected_since = parts[7].strip() if len(parts) > 7 else ""
+
+                ip, port = "", ""
+                if real:
+                    if ":" in real:
+                        ip, port = real.rsplit(":", 1)
+                    else:
+                        ip = real
+
+                if name:
+                    online_names.add(name)
+                    if virt:
+                        tunnel_ips[name] = virt
+
+                clients.append({
+                    "name": name,
+                    "ip": ip,
+                    "port": port,
+                    "bytes_recv": bytes_recv,
+                    "bytes_sent": bytes_sent,
+                    "connected_since": connected_since,
+                })
+
+            return clients, online_names, tunnel_ips
+
+        # --- Фолбэк: старый текстовый формат ---
+        section = None
         for raw in lines:
             line = raw.strip()
             if not line:
@@ -3713,10 +3815,7 @@ def parse_openvpn_status(status_path=STATUS_LOG):
                 continue
 
             if section == "CLIENT_LIST":
-                # header examples:
-                # v1: Common Name,Real Address,Bytes Received,Bytes Sent,Connected Since
-                # v2: Common Name,Real Address,Bytes Received,Bytes Sent,Connected Since,Connected Since (time_t),Username,Client ID,Peer ID
-                if line.startswith("Common Name,Real Address"):
+                if line.startswith("Common Name,"):
                     continue
                 if "," not in line:
                     continue
@@ -3725,11 +3824,20 @@ def parse_openvpn_status(status_path=STATUS_LOG):
                     continue
                 name = parts[0].strip()
                 real = parts[1].strip()
-                ip = real.split(":")[0] if real else ""
-                port = real.split(":")[1] if ":" in real else ""
-                bytes_recv = parts[2].strip() if len(parts) >= 3 else "0"
-                bytes_sent = parts[3].strip() if len(parts) >= 4 else "0"
-                connected_since = parts[4].strip() if len(parts) >= 5 else ""
+                ip, port = "", ""
+                if real:
+                    if ":" in real:
+                        ip, port = real.rsplit(":", 1)
+                    else:
+                        ip = real
+
+                bytes_recv = parts[2].strip() if len(parts) > 2 else "0"
+                bytes_sent = parts[3].strip() if len(parts) > 3 else "0"
+                connected_since = parts[4].strip() if len(parts) > 4 else ""
+
+                if name:
+                    online_names.add(name)
+
                 clients.append({
                     "name": name,
                     "ip": ip,
@@ -3738,16 +3846,9 @@ def parse_openvpn_status(status_path=STATUS_LOG):
                     "bytes_sent": bytes_sent,
                     "connected_since": connected_since,
                 })
-                # IMPORTANT: mark as online from CLIENT LIST (even if ROUTING TABLE absent)
-                if name:
-                    online_names.add(name)
-                continue
 
-            if section == "ROUTING_TABLE":
-                # header examples:
-                # Virtual Address,Common Name,Real Address,Last Ref
-                # Virtual Address,Common Name
-                if line.startswith("Virtual Address,Common Name"):
+            elif section == "ROUTING_TABLE":
+                if line.startswith("Virtual Address,"):
                     continue
                 if "," not in line:
                     continue
@@ -3760,12 +3861,12 @@ def parse_openvpn_status(status_path=STATUS_LOG):
                     online_names.add(name)
                     if virt:
                         tunnel_ips[name] = virt
-                continue
 
     except Exception as e:
         print(f"[parse_openvpn_status] {e}")
 
     return clients, online_names, tunnel_ips
+
 
 # ------------------ safe_edit_text ------------------
 async def safe_edit_text(q, context, text, **kwargs):
@@ -3907,26 +4008,43 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     data = q.data
     print("DEBUG callback_data:", data)
 
+    # Алиасы на случай разных callback_data (чтобы потом не ломалось)
+    aliases = {
+        "trafik": "traffic",
+        "traffic_btn": "traffic",
+        "traffic_menu": "traffic",
+        "traffic_report": "traffic",
+    }
+    data = aliases.get(data, data)
+
     if data == 'refresh':
         await safe_edit_text(q, context, format_clients_by_certs(), parse_mode="HTML")
 
     elif data == 'stats':
-        # ваш код stats
-        status_path = detect_status_log(os.path.join(OPENVPN_DIR, "server.conf"))
-        clients, online_names, tunnel_ips = parse_openvpn_status(status_path)
+        clients, online_names, tunnel_ips = parse_openvpn_status("/var/log/openvpn/status.log")
         files = get_ovpn_files()
         files = sorted(files, key=lambda x: _natural_key(x[:-5]))
         lines = ["<b>Статус всех ключей:</b>"]
         for f in files:
             name = f[:-5]
-            st = "🚫" if is_client_ccd_disabled(name) else ("🟢" if name in online_names else "⚪")
+            st = "⛔" if is_client_ccd_disabled(name) else ("🟢" if name in online_names else "🔴")
             lines.append(f"{st} {name}")
         text = "\n".join(lines)
         msgs = split_message(text)
         await safe_edit_text(q, context, msgs[0], parse_mode="HTML")
-        for msg in msgs[1:]:
-            await context.bot.send_message(chat_id=q.message.chat_id, text=msg, parse_mode="HTML")
+        for m in msgs[1:]:
+            await context.bot.send_message(chat_id=q.message.chat_id, text=m, parse_mode="HTML")
 
+    # ✅ ДОБАВЛЕНО: обработка кнопки "Трафик"
+    elif data == 'traffic':
+        status_path = "/var/log/openvpn/status.log"
+        clients, _online_names, _tunnel_ips = parse_openvpn_status(status_path)
+
+        # обновляем накопление трафика из status.log (если у тебя эти функции есть)
+        update_traffic_from_status(clients)
+        save_traffic_db(force=True)
+
+        await safe_edit_text(q, context, build_traffic_report(), parse_mode="HTML")
 
     elif data == 'traffic_clear':
         kb = InlineKeyboardMarkup([
@@ -3936,73 +4054,97 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await safe_edit_text(q, context, "Очистить накопленный трафик?", reply_markup=kb)
 
     elif data == 'confirm_clear_traffic':
-        clear_traffic_stats(); await safe_edit_text(q, context, "Очищено.")
+        clear_traffic_stats()
+        await safe_edit_text(q, context, "Очищено.")
+
     elif data == 'cancel_clear_traffic':
         await safe_edit_text(q, context, "Отменено.")
 
     elif data == 'update_remote':
         await start_update_remote_dialog(update, context)
+
     elif data == 'cancel_update_remote':
-        context.user_data.pop('await_remote_input', None); await safe_edit_text(q, context, "Отменено.")
+        context.user_data.pop('await_remote_input', None)
+        await safe_edit_text(q, context, "Отменено.")
 
     elif data == 'renew_key':
         await renew_key_request(update, context)
+
     elif data.startswith('renew_'):
         await renew_key_select_handler(update, context)
+
     elif data == 'cancel_renew':
         await renew_cancel(update, context)
 
     elif data == 'backup_menu':
         await backup_menu(update, context)
+
     elif data == 'restore_menu':
         await restore_menu(update, context)
+
     elif data == 'backup_create':
         await perform_backup_and_send(update, context)
+
     elif data == 'backup_list':
         await show_backup_list(update, context)
+
     elif data.startswith('backup_info_'):
         await show_backup_info(update, context, data.replace('backup_info_', '', 1))
+
     elif data.startswith('backup_send_'):
         await send_backup_file(update, context, data.replace('backup_send_', '', 1))
+
     elif data.startswith('restore_dry_'):
         await restore_dry_run(update, context, data.replace('restore_dry_', '', 1))
+
     elif data.startswith('restore_apply_'):
         await restore_apply(update, context, data.replace('restore_apply_', '', 1))
+
     elif data.startswith('backup_delete_confirm_'):
         await backup_delete_apply(update, context, data.replace('backup_delete_confirm_', '', 1))
+
     elif data.startswith('backup_delete_'):
         await backup_delete_prompt(update, context, data.replace('backup_delete_', '', 1))
 
     elif data == 'bulk_delete_start':
         await start_bulk_delete(update, context)
+
     elif data == 'bulk_delete_confirm':
         await bulk_delete_confirm(update, context)
+
     elif data == 'cancel_bulk_delete':
         await bulk_delete_cancel(update, context)
 
     elif data == 'bulk_send_start':
         await start_bulk_send(update, context)
+
     elif data == 'bulk_send_confirm':
         await bulk_send_confirm(update, context)
+
     elif data == 'cancel_bulk_send':
         await bulk_send_cancel(update, context)
 
     elif data == 'bulk_enable_start':
         await start_bulk_enable(update, context)
+
     elif data == 'bulk_enable_confirm':
         await bulk_enable_confirm(update, context)
+
     elif data == 'cancel_bulk_enable':
         await bulk_enable_cancel(update, context)
 
     elif data == 'bulk_disable_start':
         await start_bulk_disable(update, context)
+
     elif data == 'bulk_disable_confirm':
         await bulk_disable_confirm(update, context)
+
     elif data == 'cancel_bulk_disable':
         await bulk_disable_cancel(update, context)
 
     elif data == 'update_info':
         await send_simple_update_command(update, context)
+
     elif data == 'copy_update_cmd':
         await resend_update_command(update, context)
 
@@ -4033,10 +4175,11 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     elif data == 'block_alert':
         await safe_edit_text(
             q, context,
-                             "🔔 Мониторинг блокировки включен.\n"
-                             f"Порог MIN_ONLINE_ALERT = {MIN_ONLINE_ALERT}\n"
-                             "Оповещения если:\n • Все клиенты оффлайн\n • Онлайн меньше порога\n"
-                             "Проверка каждые 10с. Истечения — каждые 12ч.")
+            "🔔 Мониторинг блокировки включен.\n"
+            f"Порог MIN_ONLINE_ALERT = {MIN_ONLINE_ALERT}\n"
+            "Оповещения если:\n • Все клиенты оффлайн\n • Онлайн меньше порога\n"
+            "Проверка каждые 10с. Истечения — каждые 12ч."
+        )
 
     elif data == 'help':
         await context.bot.send_message(q.message.chat_id, runtime_info())
@@ -4051,8 +4194,10 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     elif data == 'home':
         await context.bot.send_message(q.message.chat_id, "Главное меню уже показано. Для обновления нажми /start.")
+
     else:
         await safe_edit_text(q, context, "Неизвестная команда.")
+
 
 # ------------------ Команды (CLI) ------------------
 async def traffic_cmd_cli(update: Update, context: ContextTypes.DEFAULT_TYPE):
