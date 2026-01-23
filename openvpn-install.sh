@@ -2843,6 +2843,10 @@ group $OPENVPN_GROUP" >>/etc/openvpn/server/server.conf
 persist-tun
 keepalive 10 120
 topology subnet" >>/etc/openvpn/server/server.conf
+    # Для UDP — чтобы сервер корректно завершал сессию клиента (explicit-exit-notify работает именно для UDP)
+    if [[ $PROTOCOL == "udp" ]]; then
+     echo "explicit-exit-notify 1" >>/etc/openvpn/server/server.conf
+    fi
 
 	# IPv4 server directive - always assign IPv4 to clients for proper routing
 	# Even for IPv6-only mode, we need IPv4 addresses so redirect-gateway def1 can block IPv4 leaks
@@ -3132,6 +3136,15 @@ verb 3"
 	if ! grep -q "RuntimeDirectory=" /etc/systemd/system/openvpn-server@.service; then
 		run_cmd "Patching service file (RuntimeDirectory)" sed -i '/\[Service\]/a RuntimeDirectory=openvpn-server' /etc/systemd/system/openvpn-server@.service
 	fi
+	
+	# Fix systemd timeout on some hosts: don't wait for sd_notify from OpenVPN
+    if systemctl cat openvpn-server@.service 2>/dev/null | grep -qE '^\s*Type\s*=\s*notify\b'; then
+     mkdir -p /etc/systemd/system/openvpn-server@.service.d
+     cat > /etc/systemd/system/openvpn-server@.service.d/override.conf <<'EOF'
+    [Service]
+    Type=simple
+EOF
+    fi
 
 	run_cmd "Reloading systemd" systemctl daemon-reload
 	run_cmd "Enabling OpenVPN service" systemctl enable openvpn-server@server
