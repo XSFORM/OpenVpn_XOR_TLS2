@@ -20,6 +20,9 @@ from html import escape
 import glob
 import json
 import traceback
+import re
+import tempfile
+import shutil
 
 
 # === AUTO PATH DETECTION (server/ preferred) ===
@@ -3229,43 +3232,102 @@ def generate_ovpn_for_client(
     cert_path=None,
     key_path=None,
     tls_crypt_path=f"{OPENVPN_DIR}/tls-crypt.key",
+    tls_crypt_v2_path=f"{OPENVPN_DIR}/tls-crypt-v2.key",
     tls_auth_path=f"{OPENVPN_DIR}/tls-auth.key",
-    server_conf_path=f"{OPENVPN_DIR}/server.conf"
+    server_conf_path=f"{OPENVPN_DIR}/server.conf",
+    openvpn_bin="/usr/sbin/openvpn",
 ):
+    """
+    Генерация .ovpn:
+      - Всегда: template + <ca> + <cert> + <key>
+      - Если сервер tls-crypt-v2: добавляем <tls-crypt-v2> (генерим через openvpn --tls-crypt-v2 ... --genkey tls-crypt-v2-client)
+      - Иначе если tls-crypt: добавляем <tls-crypt>
+      - Иначе если tls-auth: добавляем key-direction 1 + <tls-auth>
+    """
+
     if cert_path is None:
         cert_path = f"{EASYRSA_DIR}/pki/issued/{client_name}.crt"
     if key_path is None:
         key_path = f"{EASYRSA_DIR}/pki/private/{client_name}.key"
+
     ovpn_file = os.path.join(output_dir, f"{client_name}.ovpn")
-    TLS_SIG = None
-    if os.path.exists(server_conf_path):
-        with open(server_conf_path, "r") as f:
+
+    # --- читаем server.conf и определяем режим ---
+    conf = ""
+    if server_conf_path and os.path.exists(server_conf_path):
+        with open(server_conf_path, "r", encoding="utf-8", errors="ignore") as f:
             conf = f.read()
-            if "tls-crypt" in conf: TLS_SIG = 1
-            elif "tls-auth" in conf: TLS_SIG = 2
-    with open(template_path, "r") as f:
+
+    # порядок важен: сначала v2, потом tls-crypt, потом tls-auth
+    tls_mode = None
+    if "tls-crypt-v2" in conf:
+        tls_mode = "tls-crypt-v2"
+    elif "tls-crypt" in conf:
+        tls_mode = "tls-crypt"
+    elif "tls-auth" in conf:
+        tls_mode = "tls-auth"
+
+    # --- читаем шаблон/серты ---
+    with open(template_path, "r", encoding="utf-8", errors="ignore") as f:
         template_content = f.read().rstrip()
-    with open(ca_path, "r") as f:
+
+    with open(ca_path, "r", encoding="utf-8", errors="ignore") as f:
         ca_content = f.read().strip()
+
+    # у тебя уже есть extract_pem_cert() в коде — используем её
     cert_content = extract_pem_cert(cert_path)
-    with open(key_path, "r") as f:
+
+    with open(key_path, "r", encoding="utf-8", errors="ignore") as f:
         key_content = f.read().strip()
-    content = (template_content + "\n"
-               "<ca>\n" + ca_content + "\n</ca>\n"
-               "<cert>\n" + cert_content + "\n</cert>\n"
-               "<key>\n" + key_content + "\n</key>\n")
-    if TLS_SIG == 1 and os.path.exists(tls_crypt_path):
-        with open(tls_crypt_path, "r") as f:
+
+    content = (
+        template_content + "\n"
+        + "<ca>\n" + ca_content + "\n</ca>\n"
+        + "<cert>\n" + cert_content + "\n</cert>\n"
+        + "<key>\n" + key_content + "\n</key>\n"
+    )
+
+    # --- добавляем TLS блок ---
+    if tls_mode == "tls-crypt-v2":
+        # генерируем клиентский tls-crypt-v2 ключ
+        tmp_v2 = f"/tmp/{client_name}.tls-crypt-v2.key"
+        if os.path.exists(tmp_v2):
+            try:
+                os.remove(tmp_v2)
+            except:
+                pass
+
+        # openvpn --tls-crypt-v2 <serverkey> --genkey tls-crypt-v2-client <outfile>
+        cmd = [
+            openvpn_bin,
+            "--tls-crypt-v2", tls_crypt_v2_path,
+            "--genkey", "tls-crypt-v2-client", tmp_v2,
+        ]
+        subprocess.run(cmd, check=True)
+
+        with open(tmp_v2, "r", encoding="utf-8", errors="ignore") as f:
+            v2_client_key = f.read().strip()
+
+        content += "<tls-crypt-v2>\n" + v2_client_key + "\n</tls-crypt-v2>\n"
+
+    elif tls_mode == "tls-crypt" and tls_crypt_path and os.path.exists(tls_crypt_path):
+        with open(tls_crypt_path, "r", encoding="utf-8", errors="ignore") as f:
             tls_crypt_content = f.read().strip()
         content += "<tls-crypt>\n" + tls_crypt_content + "\n</tls-crypt>\n"
-    elif TLS_SIG == 2 and os.path.exists(tls_auth_path):
-        content += "key-direction 1\n"
-        with open(tls_auth_path, "r") as f:
+
+    elif tls_mode == "tls-auth" and tls_auth_path and os.path.exists(tls_auth_path):
+        with open(tls_auth_path, "r", encoding="utf-8", errors="ignore") as f:
             tls_auth_content = f.read().strip()
+        content += "key-direction 1\n"
         content += "<tls-auth>\n" + tls_auth_content + "\n</tls-auth>\n"
-    with open(ovpn_file, "w") as f:
+
+    # --- сохраняем .ovpn ---
+    os.makedirs(output_dir, exist_ok=True)
+    with open(ovpn_file, "w", encoding="utf-8", errors="ignore") as f:
         f.write(content)
+
     return ovpn_file
+
 
 # ------------------ Создание ключей (расширено) ------------------
 async def create_key_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
