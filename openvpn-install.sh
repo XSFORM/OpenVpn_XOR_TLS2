@@ -2282,7 +2282,7 @@ function installQuestions() {
 
 	log_menu ""
 	log_prompt "What port do you want OpenVPN to listen to?"
-	log_menu "   1) Default: 1194"
+	log_menu "   1) Default: 443"
 	log_menu "   2) Custom"
 	log_menu "   3) Random [49152-65535]"
 	until [[ $PORT_CHOICE =~ ^[1-3]$ ]]; do
@@ -2294,7 +2294,7 @@ function installQuestions() {
 		;;
 	2)
 		until [[ $PORT =~ ^[0-9]+$ ]] && [ "$PORT" -ge 1 ] && [ "$PORT" -le 65535 ]; do
-			read -rp "Custom port [1-65535]: " -e -i 1194 PORT
+			read -rp "Custom port [1-65535]: " -e -i 443 PORT
 		done
 		;;
 	3)
