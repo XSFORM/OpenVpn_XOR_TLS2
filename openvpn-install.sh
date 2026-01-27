@@ -2367,14 +2367,14 @@ function installQuestions() {
 	log_prompt "Do you want to customize the tunnel MTU?"
 	log_menu "   MTU controls the maximum packet size. Lower values can help"
 	log_menu "   with connectivity issues on some networks (e.g., PPPoE, mobile)."
-	log_menu "   1) Default (1500) - works for most networks"
+	log_menu "   1) Default (1460) - GTS - TELEKOM"
 	log_menu "   2) Custom"
 	until [[ $MTU_CHOICE =~ ^[1-2]$ ]]; do
 		read -rp "MTU choice [1-2]: " -e -i 1 MTU_CHOICE
 	done
 	if [[ $MTU_CHOICE == "2" ]]; then
 		until [[ $MTU =~ ^[0-9]+$ ]] && [[ $MTU -ge 576 ]] && [[ $MTU -le 65535 ]]; do
-			read -rp "MTU [576-65535]: " -e -i 1500 MTU
+			read -rp "MTU [576-65535]: " -e -i 1460 MTU
 		done
 	fi
 	log_menu ""
